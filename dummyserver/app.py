@@ -230,6 +230,7 @@ async def encodingrequest() -> ResponseTypes:
 
 
 @hypercorn_app.route("/redirect", methods=["GET", "POST", "PUT"])
+@pyodide_testing_app.route("/redirect", methods=["GET", "POST", "PUT"])
 async def redirect() -> ResponseTypes:
     "Perform a redirect to ``target``"
     values = await request.values
