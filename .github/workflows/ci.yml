@@ -1,6 +1,13 @@
 name: CI
 
-on: [push, pull_request]
+on:
+  workflow_dispatch:
+    inputs:
+      test-filter:
+        description: "Optional nox posargs (pytest selectors) to run a subset of tests"
+        required: false
+        type: string
+        default: ""
 
 permissions: "read-all"
 
@@ -34,63 +41,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
+        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12"]
         os:
-          - macos-12
+          - macos-latest
           - windows-latest
           - ubuntu-22.04
         nox-session: ['']
-        include:
-          - experimental: false
-          # integration
-          # 3.8 and 3.9 have a known issue with large SSL requests that we work around:
-          # https://github.com/urllib3/urllib3/pull/3181#issuecomment-1794830698
-          - python-version: "3.8"
-            os: ubuntu-latest
-            experimental: false
-            nox-session: test_integration
-          - python-version: "3.9"
-            os: ubuntu-latest
-            experimental: false
-            nox-session: test_integration
-          - python-version: "3.12"
-            os: ubuntu-latest
-            experimental: false
-            nox-session: test_integration
-          # OpenSSL 1.1.1
-          - python-version: "3.8"
-            os: ubuntu-20.04
-            experimental: false
-            nox-session: test-3.8
-          # pypy
-          - python-version: "pypy-3.8"
-            os: ubuntu-latest
-            experimental: false
-            nox-session: test-pypy3.8
-          - python-version: "pypy-3.9-v7.3.13"
-            os: ubuntu-latest
-            experimental: false
-            nox-session: test-pypy3.9
-          - python-version: "pypy-3.10"
-            os: ubuntu-latest
-            experimental: false
-            nox-session: test-pypy3.10
-          - python-version: "3.x"
-          # brotli
-            os: ubuntu-latest
-            experimental: false
-            nox-session: test_brotlipy
-          # Test CPython with a broken hostname_checks_common_name (the fix is in 3.9.3)
-          - python-version: "3.9.2"
-            os: ubuntu-20.04  # CPython 3.9.2 is not available for ubuntu-22.04.
-            experimental: false
-            nox-session: test-3.9
-          - python-version: "3.11"
-            os: ubuntu-latest
-            nox-session: emscripten
-            experimental: true
-          - python-version: "3.13"
-            experimental: true
         exclude:
           # Ubuntu 22.04 comes with OpenSSL 3.0, so only CPython 3.9+ is compatible with it
           # https://github.com/python/cpython/issues/83001
@@ -98,18 +54,32 @@ jobs:
             os: ubuntu-22.04
 
     runs-on: ${{ matrix.os }}
-    name: ${{ fromJson('{"macos-12":"macOS","windows-latest":"Windows","ubuntu-latest":"Ubuntu","ubuntu-20.04":"Ubuntu 20.04 (OpenSSL 1.1.1)","ubuntu-22.04":"Ubuntu 22.04 (OpenSSL 3.0)"}')[matrix.os] }} ${{ matrix.python-version }} ${{ matrix.nox-session}}
-    continue-on-error: ${{ matrix.experimental }}
+    name: ${{ fromJson('{"macos-latest":"macOS","windows-latest":"Windows","ubuntu-latest":"Ubuntu","ubuntu-20.04":"Ubuntu 20.04 (OpenSSL 1.1.1)","ubuntu-22.04":"Ubuntu 22.04 (OpenSSL 3.0)"}')[matrix.os] }} ${{ matrix.python-version }} ${{ matrix.nox-session}}
     timeout-minutes: 30
     steps:
       - name: "Checkout repository"
         uses: actions/checkout@3df4ab11eba7bda6032a0b82a6bb43b11571feac # v4.0.0
 
+      - name: "Setup Python ${{ matrix.python-version }} (macOS arm64)"
+        if: ${{ startsWith(matrix.os, 'macos') }}
+        uses: MatteoH2O1999/setup-python@v4
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache-build: true
+          allow-build: allow
+
       - name: "Setup Python ${{ matrix.python-version }}"
+        if: ${{ !startsWith(matrix.os, 'macos') }}
         uses: actions/setup-python@0a5c61591373683505ea898e09a3ea4f39ef2b9c # v5.0.0
         with:
           python-version: ${{ matrix.python-version }}
           allow-prereleases: true
+
+      - name: "Write CI constraints"
+        shell: bash
+        run: |
+          printf '%s\n' 'Flask<3.1' 'Werkzeug<3.1' 'nox<2025' 'argcomplete<3.6' > ci-constraints.txt
+          echo "PIP_CONSTRAINT=${{ github.workspace }}/ci-constraints.txt" >> "$GITHUB_ENV"
 
       - name: "Install dependencies"
         run: python -m pip install --upgrade pip setuptools nox
@@ -122,22 +92,29 @@ jobs:
         if: ${{ matrix.nox-session == 'emscripten' }}
       - name: "Run tests"
         # If no explicit NOX_SESSION is set, run the default tests for the chosen Python version
-        run: nox -s ${NOX_SESSION:-test-$PYTHON_VERSION}
+        run: |
+          if [ -n "${{ inputs.test-filter }}" ]; then
+            nox -s ${NOX_SESSION:-test-$PYTHON_VERSION} -- ${{ inputs.test-filter }}
+          else
+            nox -s ${NOX_SESSION:-test-$PYTHON_VERSION}
+          fi
         env:
           PYTHON_VERSION: ${{ matrix.python-version }}
           NOX_SESSION: ${{ matrix.nox-session }}
 
       - name: "Upload artifact"
-        uses: actions/upload-artifact@0b7f8abb1508181956e8e162db84b466c27e18ce # v3.1.2
+        uses: actions/upload-artifact@v4
         with:
-          name: coverage-data
+          name: coverage-data-${{ matrix.os }}-${{ matrix.python-version }}-${{ matrix.nox-session }}
           path: ".coverage.*"
           if-no-files-found: error
+          include-hidden-files: true
 
 
   coverage:
-    if: always()
+    if: false
     runs-on: "ubuntu-latest"
+    timeout-minutes: 10
     needs: test
     steps:
       - name: "Checkout repository"
