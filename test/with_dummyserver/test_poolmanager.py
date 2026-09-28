@@ -50,6 +50,28 @@ class TestPoolManager(HypercornDummyServerTestCase):
             assert r.status == 200
             assert r.data == b"Dummy server!"
 
+    @mock.patch("urllib3.response.GzipDecoder.decompress")
+    def test_no_decoding_with_redirect_when_preload_disabled(
+        self, gzip_decompress: mock.MagicMock
+    ) -> None:
+        """
+        Test that urllib3 does not attempt to decode a gzipped redirect
+        response when `preload_content` is set to `False`.
+        """
+        with PoolManager() as http:
+            # Three requests are expected: two redirects and one final / 200 OK.
+            r = http.request(
+                "GET",
+                f"{self.base_url}/redirect",
+                fields={
+                    "target": f"{self.base_url}/redirect?compressed=true",
+                    "compressed": "true",
+                },
+                preload_content=False,
+            )
+        assert r.status == 200
+        gzip_decompress.assert_not_called()
+
     @pytest.mark.parametrize(
         "pool_manager_kwargs",
         ({}, {"retries": None}, {"retries": 2}, {"retries": Retry(2)}),
